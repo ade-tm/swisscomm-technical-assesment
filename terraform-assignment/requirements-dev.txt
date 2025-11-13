@@ -1,0 +1,13 @@
+# AWS SDK for Python, used by all Lambda functions
+boto3
+
+# Testing framework
+pytest
+
+# Pytest plugin for measuring test coverage
+pytest-cov
+
+# Library to mock AWS services during unit tests
+moto
+
+json

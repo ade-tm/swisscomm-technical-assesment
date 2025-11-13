@@ -1,0 +1,274 @@
+# ============================================================================
+# CloudFormation Stack: Secure S3 Bucket with Comprehensive Security Controls
+# ============================================================================
+#
+# Purpose:
+#   Creates a production-ready S3 bucket with enterprise-grade security features
+#   and a dedicated logging bucket for audit trails.
+#
+# Resources Created:
+#   1. Main S3 Bucket - Primary storage with full security controls
+#   2. Logging S3 Bucket - Dedicated bucket for access logs
+#   3. Bucket Policies - Enforce HTTPS and encryption requirements
+#
+# Security Features Implemented:
+#   ✓ Server-side encryption (AES256) on all buckets
+#   ✓ Versioning enabled for data recovery and compliance
+#   ✓ Public access completely blocked (prevents data breaches)
+#   ✓ Access logging configured (audit trail)
+#   ✓ HTTPS-only access enforced via bucket policies
+#   ✓ Unencrypted uploads denied
+#   ✓ Lifecycle policies for cost optimization
+# ============================================================================
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: Cloudformation template for creating AWS S3 Bucket with comprehensive security features
+
+Parameters:
+  BucketName:
+    Type: String
+    Description: Name for s3 bucket (Name must begin and end with a letter or number and consist only of lowercase letters, numbers, and hyphens (-).)
+    AllowedPattern: (?=^.{3,63}$)^[a-z0-9][a-z0-9-]*[a-z0-9]
+    ConstraintDescription: Name must begin and end with a letter or number and consist only of lowercase letters, numbers, and hyphens (-).
+
+Resources:
+  # ==========================================================================
+  # LOGGING BUCKET
+  # ==========================================================================
+  # Dedicated bucket for storing access logs from the main S3 bucket.
+  # This separation follows security best practices by isolating audit logs.
+  # 
+  # Security Features:
+  #   - Encryption: AES256 server-side encryption
+  #   - Versioning: Enabled to preserve log history
+  #   - Public Access: Completely blocked
+  #   - Lifecycle: Automatic cleanup of old logs (90 days)
+  # ==========================================================================
+  LoggingBucket:
+    Type: AWS::S3::Bucket
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: "This is a logging bucket. Logging a logging bucket would create unnecessary complexity and cost."
+    Properties:
+      BucketName: !Sub ${BucketName}-logs-s3
+      
+      # Encryption: Protects log data at rest using AWS-managed keys
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      
+      # Versioning: Preserves, retrieves, and restores every version of every log
+      VersioningConfiguration:
+        Status: Enabled
+      
+      # Public Access Block: Prevents any public access to sensitive logs
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true           # Blocks public ACLs on new objects
+        BlockPublicPolicy: true          # Blocks public bucket policies
+        IgnorePublicAcls: true           # Ignores existing public ACLs
+        RestrictPublicBuckets: true      # Restricts cross-account access
+      
+      # Lifecycle Policy: Manages log retention and cost optimization
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldLogs
+            Status: Enabled
+            ExpirationInDays: 90        # Delete logs after 90 days
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30  # Clean up old versions
+
+  # ==========================================================================
+  # LOGGING BUCKET POLICY
+  # ==========================================================================
+  # Enforces security requirements on the logging bucket through IAM policies.
+  # 
+  # Policy Statements:
+  #   1. DenyInsecureTransport: Requires all connections use HTTPS/TLS
+  #   2. DenyUnencryptedObjectUploads: Ensures all objects are encrypted
+  # ==========================================================================
+  LoggingBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LoggingBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Deny any requests that don't use HTTPS (SSL/TLS)
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt LoggingBucket.Arn
+              - !Sub '${LoggingBucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+          
+          # Deny uploads that aren't encrypted with AES256
+          - Sid: DenyUnencryptedObjectUploads
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:PutObject'
+            Resource: !Sub '${LoggingBucket.Arn}/*'
+            Condition:
+              StringNotEquals:
+                's3:x-amz-server-side-encryption': 'AES256'
+
+  # ==========================================================================
+  # MAIN S3 BUCKET
+  # ==========================================================================
+  # Primary storage bucket with comprehensive security and cost optimization.
+  # 
+  # Security Controls:
+  #   - Encryption at rest with bucket keys (cost optimized)
+  #   - Versioning for data recovery
+  #   - Complete public access block
+  #   - Access logging to dedicated bucket
+  # 
+  # Cost Optimization:
+  #   - Lifecycle transitions to cheaper storage classes
+  #   - Automatic cleanup of old versions
+  #   - Abort incomplete multipart uploads
+  # ==========================================================================
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    DependsOn: LoggingBucket
+    Properties: 
+      BucketName: !Sub ${BucketName}-s3
+      
+      # Encryption: Server-side encryption with bucket keys for cost efficiency
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true  # Reduces encryption costs by ~99%
+      
+      # Versioning: Critical for data recovery and compliance requirements
+      VersioningConfiguration:
+        Status: Enabled
+      
+      # Public Access Block: Defense against accidental public exposure
+      # This is the #1 control to prevent S3 data breaches
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true           # Blocks setting public ACLs
+        BlockPublicPolicy: true          # Blocks public bucket policies
+        IgnorePublicAcls: true           # Ignores all public ACLs
+        RestrictPublicBuckets: true      # Restricts cross-account access
+      
+      # Access Logging: Tracks all requests for security auditing
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LoggingBucket
+        LogFilePrefix: access-logs/
+      
+      # Lifecycle Policies: Automated data management for cost optimization
+      LifecycleConfiguration:
+        Rules:
+          # Transition to cheaper storage classes over time
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 30
+                StorageClass: STANDARD_IA    # 30 days: Move to Infrequent Access
+              - TransitionInDays: 90
+                StorageClass: GLACIER         # 90 days: Archive to Glacier
+          
+          # Clean up old versions to control storage costs
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 90
+          
+          # Prevent costs from abandoned uploads
+          - Id: AbortIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+  # ==========================================================================
+  # MAIN BUCKET POLICY
+  # ==========================================================================
+  # Enhanced security policy with multiple defensive controls.
+  # Implements defense-in-depth by layering multiple security requirements.
+  # 
+  # Policy Statements:
+  #   1. DenyInsecureTransport: Enforces HTTPS-only access
+  #   2. DenyUnencryptedObjectUploads: Requires encryption on all uploads
+  #   3. DenyObjectsWithoutBucketOwnerFullControl: Prevents unauthorized access
+  # ==========================================================================
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Security Control #1: Deny all non-HTTPS requests
+          # Prevents man-in-the-middle attacks and data interception
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt S3Bucket.Arn
+              - !Sub '${S3Bucket.Arn}/*'
+            Condition:
+              Bool:
+                'aws:SecureTransport': 'false'
+          
+          # Security Control #2: Deny unencrypted uploads
+          # Works in conjunction with default encryption as additional defense
+          - Sid: DenyUnencryptedObjectUploads
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:PutObject'
+            Resource: !Sub '${S3Bucket.Arn}/*'
+            Condition:
+              StringNotEquals:
+                's3:x-amz-server-side-encryption': 'AES256'
+          
+          # Security Control #3: Enforce proper object ownership
+          # Prevents objects from being uploaded with public or external ownership
+          - Sid: DenyObjectsWithoutBucketOwnerFullControl
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:PutObject'
+            Resource: !Sub '${S3Bucket.Arn}/*'
+            Condition:
+              StringNotEquals:
+                's3:x-amz-acl':
+                  - bucket-owner-full-control
+                  - private
+
+# ==========================================================================
+# STACK OUTPUTS
+# ==========================================================================
+# Provides key resource identifiers for downstream integrations
+# ==========================================================================
+Outputs:
+  BucketARN:
+    Description: The ARN for the main bucket that got created
+    Value: !GetAtt S3Bucket.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-BucketARN
+  
+  BucketName:
+    Description: The name of the main bucket
+    Value: !Ref S3Bucket
+    Export:
+      Name: !Sub ${AWS::StackName}-BucketName
+  
+  LoggingBucketARN:
+    Description: The ARN for the logging bucket
+    Value: !GetAtt LoggingBucket.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-LoggingBucketARN
+  
+  LoggingBucketName:
+    Description: The name of the logging bucket
+    Value: !Ref LoggingBucket
+    Export:
+      Name: !Sub ${AWS::StackName}-LoggingBucketName

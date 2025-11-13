@@ -1,0 +1,32 @@
+# AWS Credentials
+*.pem
+*.key
+.aws/
+credentials
+.env
+
+# LocalStack Data
+volume/
+.localstack/
+
+# Testing Files
+test.txt
+test-file.txt
+downloaded*.txt
+*.tmp
+*.backup
+verify-*.sh
+cleanup.sh
+
+# IDE
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
+
+# OS Files
+Thumbs.db
+Desktop.ini
