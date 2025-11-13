@@ -338,7 +338,7 @@ aws s3 cp bad.txt \
   --sse aws:kms
 ```
 
-**Expected Result (Real AWS):** AWS CLI returns an error immediately - the upload is rejected before it even reaches S3. Path traversal is blocked by AWS's API validation.
+**Expected Result (Real AWS):** The AWS CLI returns an error immediately; the upload is rejected before it even reaches S3. AWS's API validation blocks path traversal.
 
 **Why the difference?** Real AWS has stricter S3 key validation at the API level that prevents malformed paths from ever being created. LocalStack is more permissive, which actually lets you test the Lambda's input validation layer. Both approaches ultimately prevent the malicious path from being processed.
 
@@ -351,21 +351,13 @@ aws s3 cp bad.txt \
 aws --endpoint-url $ENDPOINT_URL s3 mb s3://test-unencrypted-bucket
 
 # Manually invoke the security monitor
-aws --endpoint-url $ENDPOINT_URL lambda invoke \
-  --function-name $(terraform output -raw security_monitor_lambda_name) \
-  response.json
+aws --endpoint-url "$ENDPOINT_URL" lambda invoke \
+  --function-name "$(terraform output -raw lambda_security_monitor_function_name)" \
+  --log-type Tail response-auditor-output.json \
+| jq -r '.LogResult' | base64 --decode
 
-# Check the response
-cat response.json
-```
+**Expected Result:** Response shows detection of an unencrypted bucket, and an SNS alert is sent.
 
-**Expected Result:** Response shows detection of unencrypted bucket, SNS alert sent.
-
-#### Test 5: Error Handling
-
-**Goal:** Verify Step Functions retry logic and error notifications.
-
-You can simulate this by temporarily modifying the Writer Lambda to throw an error, then upload a file. The Step Function should retry 3 times, then send an SNS notification.
 
 ## Security Features
 
