@@ -672,25 +672,6 @@ docker-compose down -v
 rm -f lambda_trigger.zip lambda_writer.zip lambda_security_monitor.zip
 ```
 
-### Partial Cleanup (Keep Infrastructure, Remove Data)
-
-```bash
-# Delete all objects in the S3 bucket
-aws --endpoint-url $ENDPOINT_URL s3 rm \
-  s3://$(terraform output -raw s3_bucket_name) \
-  --recursive
-
-# Clear all items from DynamoDB table
-aws --endpoint-url $ENDPOINT_URL dynamodb scan \
-  --table-name $(terraform output -raw dynamodb_table_name) \
-  --query "Items[*].[Filename.S, UploadTimestamp.S]" \
-  --output text | while read filename timestamp; do
-    aws --endpoint-url $ENDPOINT_URL dynamodb delete-item \
-      --table-name $(terraform output -raw dynamodb_table_name) \
-      --key "{\"Filename\":{\"S\":\"$filename\"},\"UploadTimestamp\":{\"S\":\"$timestamp\"}}"
-  done
-```
-
 ### Verify Cleanup
 
 ```bash
@@ -706,29 +687,3 @@ docker volume ls | grep localstack
 
 ---
 
-## Additional Resources
-
-### AWS Documentation
-- [AWS Step Functions Developer Guide](https://docs.aws.amazon.com/step-functions/)
-- [AWS Lambda Best Practices](https://docs.aws.amazon.com/lambda/latest/dg/best-practices.html)
-- [Amazon S3 Security Best Practices](https://docs.aws.amazon.com/AmazonS3/latest/userguide/security-best-practices.html)
-- [AWS KMS Developer Guide](https://docs.aws.amazon.com/kms/latest/developerguide/)
-- [DynamoDB Encryption at Rest](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/EncryptionAtRest.html)
-
-### Terraform Documentation
-- [Terraform AWS Provider](https://registry.terraform.io/providers/hashicorp/aws/latest/docs)
-- [AWS S3 Bucket Resource](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket)
-- [AWS Lambda Function Resource](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/lambda_function)
-- [AWS Step Functions State Machine](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sfn_state_machine)
-
-### LocalStack Documentation
-- [LocalStack Documentation](https://docs.localstack.cloud/)
-- [LocalStack AWS Service Coverage](https://docs.localstack.cloud/references/coverage/)
-- [LocalStack Configuration](https://docs.localstack.cloud/references/configuration/)
-
-### Security Best Practices
-- [OWASP Top 10](https://owasp.org/www-project-top-ten/)
-- [AWS Well-Architected Framework - Security Pillar](https://docs.aws.amazon.com/wellarchitected/latest/security-pillar/welcome.html)
-- [CIS AWS Foundations Benchmark](https://www.cisecurity.org/benchmark/amazon_web_services)
-
----
