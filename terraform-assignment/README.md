@@ -17,58 +17,41 @@ A production-ready, event-driven AWS architecture for secure file processing, bu
 - [Cleanup](#cleanup)
 - [Additional Resources](#additional-resources)
 
+---
+
 ## Overview
 
 This project implements a secure, serverless pipeline that automatically processes files uploaded to S3. Every file upload triggers a workflow that validates the input, tracks metadata in DynamoDB, and maintains continuous security compliance through automated auditing.
 
 ### What This Solution Does
 
-- **Processes file uploads** automatically when files land in S3
-- **Tracks metadata** (filename and timestamp) in an encrypted DynamoDB table
-- **Enforces encryption** across all services using AWS KMS
-- **Monitors security** with a scheduled Lambda that scans for unencrypted resources
-- **Handles errors gracefully** with retry logic and SNS notifications
-- **Validates all inputs** to prevent common security vulnerabilities
+- Processes file uploads automatically when files land in S3
+- Tracks metadata (filename and timestamp) in an encrypted DynamoDB table
+- Enforces encryption across all services using AWS KMS
+- Monitors security with a scheduled Lambda that scans for unencrypted resources
+- Handles errors gracefully with retry logic and SNS notifications
+- Validates all inputs to prevent common security vulnerabilities
 
 ### Why This Approach?
 
 The architecture follows AWS best practices:
+
 - **Least privilege access** - each service gets only the permissions it needs
 - **Defense in depth** - multiple layers of security controls
 - **Fail-safe defaults** - everything is encrypted unless explicitly configured otherwise
 - **Audit everything** - comprehensive logging and monitoring throughout
 
+---
+
 ## Architecture
 
 ### High-Level Flow
 
-```
-User uploads file
-    ↓
-S3 Bucket (encrypted)
-    ↓
-S3 Event Notification
-    ↓
-Lambda: Trigger Function
-    ↓
-Step Functions (orchestrator)
-    ↓
-Lambda: Writer Function
-    ↓
-DynamoDB (encrypted)
-```
+The pipeline operates as a fully event-driven workflow. When a user uploads a file to the S3 bucket, an S3 event notification immediately triggers the Trigger Lambda function. This function validates the file key for security issues like path traversal attacks, then initiates a Step Functions state machine to orchestrate the workflow. The state machine invokes the Writer Lambda function, which persists the file metadata (filename and upload timestamp) to an encrypted DynamoDB table. If any step fails, the state machine automatically retries up to three times with exponential backoff before sending a failure notification via SNS.
 
 ### Background Security Monitoring
 
-```
-CloudWatch Event (every 24 hours)
-    ↓
-Lambda: Security Monitor
-    ↓
-Scans all S3 buckets & DynamoDB tables
-    ↓
-SNS Alert (if issues found)
-```
+A separate security monitoring process runs independently on a scheduled basis. CloudWatch Events triggers the Security Monitor Lambda function every 24 hours to perform compliance scans. This function examines all S3 buckets and DynamoDB tables in the account, checking whether encryption is properly enabled. If any unencrypted resources are detected, the monitor immediately publishes an alert to the SNS topic, notifying the security team of the compliance violation.
 
 ### Component Overview
 
@@ -81,6 +64,8 @@ SNS Alert (if issues found)
 | **DynamoDB** | Metadata storage | KMS encryption, point-in-time recovery, composite key (Filename + Timestamp) |
 | **Security Monitor** | Compliance scanner | Daily scans, detects unencrypted resources, sends SNS alerts |
 | **KMS Keys** | Encryption | Separate keys for S3, DynamoDB, and SNS with automatic rotation |
+
+---
 
 ## Project Structure
 
@@ -120,6 +105,8 @@ terraform-assignment/
 └── docker-compose.yml            # LocalStack configuration
 ```
 
+---
+
 ## Prerequisites
 
 Before getting started, make sure you have these installed:
@@ -129,6 +116,8 @@ Before getting started, make sure you have these installed:
 - **AWS CLI** - for testing and validation
 - **Python 3.11+** - for Lambda functions and unit tests
 - **Bash** - for running helper scripts
+
+---
 
 ## Getting Started
 
@@ -144,7 +133,7 @@ docker-compose up -d
 docker-compose logs -f localstack | grep "Ready"
 ```
 
-You should see: `Ready.` in the logs when LocalStack is fully initialized.
+You should see `Ready.` in the logs when LocalStack is fully initialized.
 
 ### 2. Configure AWS CLI
 
@@ -220,6 +209,8 @@ aws --endpoint-url $ENDPOINT_URL dynamodb list-tables
 # List Lambda functions
 aws --endpoint-url $ENDPOINT_URL lambda list-functions
 ```
+
+---
 
 ## Testing
 
@@ -312,9 +303,10 @@ aws --endpoint-url $ENDPOINT_URL dynamodb scan \
 
 **Goal:** Verify path traversal protection works.
 
-**Note:** This test behaves differently in LocalStack vs real AWS:
+**Note:** This test behaves differently in LocalStack vs real AWS.
 
 **In LocalStack:**
+
 ```bash
 # LocalStack allows this upload (less strict validation)
 echo "Malicious" > bad.txt
@@ -328,9 +320,10 @@ aws --endpoint-url $ENDPOINT_URL logs tail \
   --follow
 ```
 
-**Expected Result (LocalStack):** File uploads to S3 due to Local stack limitations.
+**Expected Result (LocalStack):** File uploads to S3 due to LocalStack limitations, but the Trigger Lambda detects and blocks the malicious path from further processing.
 
 **In Real AWS:**
+
 ```bash
 # Real AWS blocks this at the S3 API level
 aws s3 cp bad.txt \
@@ -351,151 +344,77 @@ aws s3 cp bad.txt \
 aws --endpoint-url $ENDPOINT_URL s3 mb s3://test-unencrypted-bucket
 
 # Manually invoke the security monitor
-aws --endpoint-url "$ENDPOINT_URL" lambda invoke \
-  --function-name "$(terraform output -raw lambda_security_monitor_function_name)" \
-  --log-type Tail response-auditor-output.json \
-| jq -r '.LogResult' | base64 --decode
+aws --endpoint-url $ENDPOINT_URL lambda invoke \
+  --function-name $(terraform output -raw lambda_security_monitor_function_name) \
+  --log-type Tail \
+  response-auditor-output.json
 
-**Expected Result:** Response shows detection of an unencrypted bucket, and an SNS alert is sent.
+# View the results
+cat response-auditor-output.json
 
+# Check CloudWatch logs for detailed scan results
+aws --endpoint-url $ENDPOINT_URL logs tail \
+  /aws/lambda/$(terraform output -raw lambda_security_monitor_function_name)
+```
+
+**Expected Result:** Response shows detection of the unencrypted bucket, and an SNS alert is sent. The CloudWatch logs will contain detailed information about which resources failed the encryption check.
+
+---
 
 ## Security Features
 
-### 1. Encryption Everywhere
+This architecture implements multiple layers of security controls:
 
-**S3 Buckets:**
-- Server-side encryption with KMS
-- Bucket policy denies unencrypted uploads
-- HTTPS-only access enforced
+- **Encryption:** All data encrypted at rest using AWS KMS (separate keys for S3, DynamoDB, and SNS) and in transit using TLS
+- **Input Validation:** Lambda functions validate all inputs to prevent path traversal, null byte injection, and other attacks
+- **Least Privilege IAM:** Each service has only the minimum permissions needed for its specific operations
+- **Proactive Monitoring:** CloudWatch alarms for errors and throttling, plus automated daily security scans
+- **Data Lifecycle:** S3 objects expire after 90 days; DynamoDB has point-in-time recovery enabled
+- **Network Security:** S3 public access blocked, HTTPS-only enforced, Lambda functions isolated
 
-**DynamoDB:**
-- Encryption at rest with KMS
-- Point-in-time recovery enabled
-- Separate encryption key from S3
-
-**SNS:**
-- Topic encrypted with KMS
-- Separate encryption key
-
-**Why separate keys?** If one key is compromised, the blast radius is limited.
-
-### 2. Input Validation
-
-All Lambda functions validate inputs to prevent:
-- **Path traversal attacks** (`../../../etc/passwd`)
-- **Null byte injection** (`file\x00.txt`)
-- **Excessively long filenames** (>1024 chars)
-- **Empty or whitespace-only names**
-
-### 3. Least Privilege IAM
-
-Each IAM role has the minimum permissions needed:
-
-**Trigger Lambda:**
-- Can only start the specific Step Function
-- Can only write to its own CloudWatch log group
-
-**Writer Lambda:**
-- Can only write (`PutItem`) to the Files table
-- Cannot read, update, or delete
-- Can only use DynamoDB KMS key via ViaService condition
-
-**Security Monitor:**
-- Read-only access to resource configurations
-- Can publish to SNS topic only
-- Cannot modify any resources
-
-**Step Functions:**
-- Can only invoke the specific Writer Lambda
-- Can publish to SNS for error notifications
-
-### 4. Proactive Monitoring
-
-**CloudWatch Alarms:**
-- Lambda errors (>3 in 5 minutes)
-- Lambda throttling (>5 in 5 minutes)
-- Step Functions failures (>2 in 5 minutes)
-- DynamoDB throttling (>5 in 5 minutes)
-
-**Security Scanner:**
-- Runs every 24 hours automatically
-- Scans all S3 buckets for encryption
-- Scans all DynamoDB tables for encryption
-- Sends immediate SNS alert if issues found
-
-### 5. Data Lifecycle Management
-
-**S3 Lifecycle Policy:**
-- Current objects expire after 90 days
-- Noncurrent (versioned) objects expire after 90 days
-- Reduces storage costs and limits data exposure
-
-**DynamoDB:**
-- Point-in-time recovery (restore to any point in last 35 days)
-- Continuous backups
+---
 
 ## Troubleshooting
 
 ### Issue: Terraform Hangs During Apply
 
-**Symptoms:** Terraform gets stuck creating `aws_dynamodb_table` or `aws_cloudwatch_log_group`.
+**Symptoms:** Terraform gets stuck creating `aws_dynamodb_table` or `aws_cloudwatch_log_group` resources and shows no progress for several minutes.
 
-**Cause:** LocalStack 1.3.1 has bugs with these resources.
+**Cause:** LocalStack 1.3.1 has known bugs with DynamoDB point-in-time recovery and CloudWatch log group creation.
 
 **Solution:**
+
 ```bash
-# Stop Terraform (Ctrl+C)
-# Update docker-compose.yml to use LocalStack 3.0
-# Then:
+# Stop the hanging Terraform process (Ctrl+C)
+
+# Update docker-compose.yml to use LocalStack 3.0 or newer
+# Change: image: localstack/localstack:1.3.1
+# To:     image: localstack/localstack:3.0
+
+# Restart LocalStack with fresh state
 docker-compose down -v
 docker-compose up -d
-terraform destroy
+
+# Clean up partial Terraform state
+terraform destroy -auto-approve
+
+# Retry the deployment
 terraform apply
 ```
 
-### Issue: Lambda Function Not Triggering
-
-**Symptoms:** File uploaded to S3, but nothing happens.
-
-**Check:**
-```bash
-# Verify S3 notification is configured
-aws --endpoint-url $ENDPOINT_URL s3api \
-  get-bucket-notification-configuration \
-  --bucket $(terraform output -raw s3_bucket_name)
-
-# Check Lambda logs
-aws --endpoint-url $ENDPOINT_URL logs tail \
-  /aws/lambda/$(terraform output -raw trigger_lambda_name)
-```
-
-### Issue: DynamoDB Write Fails
-
-**Symptoms:** Step Function shows error about DynamoDB access denied.
-
-**Check:**
-```bash
-# Verify the Lambda role has permissions
-aws --endpoint-url $ENDPOINT_URL iam get-role-policy \
-  --role-name $(terraform output -raw writer_lambda_role_name) \
-  --policy-name $(terraform output -raw writer_lambda_policy_name)
-```
-
-### Issue: KMS Access Denied
-
-**Symptoms:** Error mentions `KMS.AccessDeniedException`.
-
-**Fix:** This is usually a KMS key policy issue. Check `kms.tf` to ensure the Lambda role is granted access to the key.
+---
 
 ## Known Limitations
 
-### LocalStack vs Real AWS
+### LocalStack vs Real AWS Behavior
 
-This project was developed and tested on both LocalStack (for local development) and real AWS. There's one important difference:
+This project was developed and tested on both LocalStack (for local development) and real AWS (for production validation). There are some important behavioral differences:
 
-**S3 Bucket Policy Enforcement:**
+#### S3 Bucket Policy Enforcement
 
-In the code, we have a bucket policy that explicitly denies any upload without KMS encryption:
+**The Implementation:**
+
+The Terraform code includes a bucket policy that explicitly denies any upload without KMS encryption:
 
 ```hcl
 {
@@ -509,137 +428,307 @@ In the code, we have a bucket policy that explicitly denies any upload without K
 }
 ```
 
-- **In Real AWS:** This works perfectly. Uploads without `--sse aws:kms` are rejected with `403 Forbidden`.
-- **In LocalStack (1.3.1):** This policy is not enforced. Uploads succeed even without the flag.
+**In Real AWS:**
+This policy works exactly as intended. Any attempt to upload a file without the `--sse aws:kms` flag results in a `403 Forbidden` error, and the upload is rejected immediately.
 
-**What this means:**
-- The code is correct and production-ready
-- Security testing in LocalStack has limitations
-- The policy was verified working in a real AWS sandbox account
+```bash
+# This fails in real AWS
+aws s3 cp file.txt s3://bucket-name/file.txt
+# Error: Access Denied (403)
+
+# This succeeds in real AWS
+aws s3 cp file.txt s3://bucket-name/file.txt --sse aws:kms
+# Upload successful
+```
+
+**In LocalStack (versions 1.3.1 and earlier):**
+The bucket policy is stored correctly but not enforced during `PutObject` operations. Uploads succeed even without the `--sse aws:kms` flag. This is a known limitation of LocalStack's S3 emulation.
+
+```bash
+# This succeeds in LocalStack (but shouldn't)
+aws --endpoint-url http://localhost:4566 s3 cp file.txt s3://bucket-name/file.txt
+# Upload successful (policy not enforced)
+```
+
+**What This Means:**
+- The Terraform configuration is correct and production-ready
+- Security testing of the bucket policy requires a real AWS environment
+- The policy was successfully verified in a real AWS sandbox account
+- LocalStack is still valuable for testing the workflow logic and Lambda functions
+
+**Recommendation:** Use LocalStack for rapid development and workflow testing, but perform final security validation in a real AWS sandbox account before production deployment.
 
 ### LocalStack Version Compatibility
 
 **Tested Versions:**
-- LocalStack 3.0+ - All features work
-- LocalStack 1.3.1 - Point-in-time recovery may cause hangs
-- Real AWS - All features work perfectly
 
-**Recommendation:** Use LocalStack 3.0+ for local testing, or deploy to real AWS for full functionality.
+| Version | Status | Notes |
+|---------|--------|-------|
+| LocalStack 3.0+ | ✅ Recommended | All features work correctly |
+| LocalStack 1.3.1 | ⚠️ Limited | DynamoDB PITR may cause hangs; bucket policies not enforced |
+| Real AWS | ✅ Full Support | All features work as designed |
+
+**Known Issues in LocalStack 1.3.1:**
+- DynamoDB `point_in_time_recovery` attribute can cause Terraform to hang during `apply`
+- S3 bucket policies with `Deny` effects are not enforced
+- CloudWatch log group creation occasionally times out
+
+**Recommended Setup:**
+- Development and testing: LocalStack 3.0+
+- Security validation: Real AWS sandbox account
+- Production deployment: Real AWS
+
+---
 
 ## Assignment Requirements
 
-This section maps the assignment requirements to the implemented solution:
+This section maps each assignment requirement to its implementation in the codebase:
 
 ### 1. End-to-End Architecture Implementation
 
-**Requirement:** Build serverless, event-driven architecture with S3 → Lambda → Step Functions → DynamoDB.
+**Requirement:** Build a serverless, event-driven architecture with S3 → Lambda → Step Functions → DynamoDB flow.
 
 **Implementation:**
-- `s3.tf` - S3 bucket with event notification
-- `lambda_trigger.tf` - Triggered by S3 events
-- `step_functions.tf` - Orchestrates the workflow
-- `lambda_writer.tf` - Writes to DynamoDB
-- `dynamodb.tf` - Stores file metadata
+- `s3.tf` - S3 bucket configured with event notification that triggers on object creation
+- `lambda_trigger.tf` - Trigger Lambda that receives S3 events and initiates workflow
+- `step_functions.tf` - State machine that orchestrates the pipeline with retry logic
+- `lambda_writer.tf` - Writer Lambda that persists metadata to DynamoDB
+- `dynamodb.tf` - DynamoDB table with composite primary key for metadata storage
+
+**Verification:** Upload a file to S3 and observe the automatic end-to-end flow through CloudWatch logs.
 
 ### 2. Secure Architecture (SSE, KMS)
 
-**Requirement:** Implement encryption and KMS.
+**Requirement:** Implement encryption at rest using AWS KMS with server-side encryption.
 
 **Implementation:**
-- `kms.tf` - Three separate KMS keys with rotation enabled
-- `s3.tf` - S3 bucket policy enforces KMS encryption
-- `dynamodb.tf` - Table encrypted with dedicated KMS key
-- `sns.tf` - SNS topic encrypted
+- `kms.tf` - Three separate customer-managed KMS keys with automatic annual rotation enabled
+- `s3.tf` - Bucket policy enforces KMS encryption on all uploads with explicit deny rule
+- `dynamodb.tf` - Table encrypted using dedicated KMS CMK, separate from S3 key
+- `sns.tf` - SNS topic encrypted with dedicated KMS CMK
+
+**Verification:** Attempt to upload a file without `--sse aws:kms` flag (fails in real AWS).
 
 ### 3. DynamoDB Attributes
 
-**Requirement:** Table with "Filename" and "Upload Timestamp" attributes.
+**Requirement:** DynamoDB table must store "Filename" and "Upload Timestamp" attributes.
 
 **Implementation:**
 ```hcl
+attribute {
+  name = "Filename"
+  type = "S"  # String
+}
+
+attribute {
+  name = "UploadTimestamp"
+  type = "S"  # String (ISO 8601 format)
+}
+
 hash_key  = "Filename"        # Partition key
 range_key = "UploadTimestamp" # Sort key
 ```
 
+**Verification:** Query DynamoDB after file upload to see both attributes populated.
+
 ### 4. S3 Object Expiration (90 Days)
 
-**Requirement:** Ensure old objects expire after 90 days.
+**Requirement:** Configure S3 lifecycle policy to automatically expire objects after 90 days.
 
-**Implementation:**
+**Implementation in `s3.tf`:**
 ```hcl
-expiration {
-  days = 90
-}
-noncurrent_version_expiration {
-  noncurrent_days = 90
+lifecycle_rule {
+  enabled = true
+  
+  expiration {
+    days = 90
+  }
+  
+  noncurrent_version_expiration {
+    noncurrent_days = 90
+  }
 }
 ```
+
+**Verification:** Run `aws s3api get-bucket-lifecycle-configuration` to view the policy.
 
 ### 5. Least Privilege IAM
 
-**Requirement:** Services should have minimum necessary permissions.
+**Requirement:** Apply principle of least privilege - services should have only the minimum permissions required.
 
-**Implementation:**
-- `iam.tf` - Granular policies with resource-specific ARNs
-- Each role has only the actions it needs
-- Condition keys restrict KMS usage to specific services
+**Implementation in `iam.tf`:**
+- Each Lambda has a dedicated execution role
+- Policies use specific resource ARNs (no wildcards like `*`)
+- Actions are limited to exact operations needed (e.g., `dynamodb:PutItem` only, not `dynamodb:*`)
+- KMS key policies include `kms:ViaService` conditions to restrict key usage to specific services
+- Step Functions can invoke only the specific Writer Lambda by ARN
+
+**Verification:** Review IAM policies with `aws iam get-role-policy` and verify no overly permissive actions.
 
 ### 6. Security Alert on Unencrypted Resources
 
-**Requirement:** Alert security team if unencrypted S3 bucket or DynamoDB table found.
+**Requirement:** Implement automated detection and alerting for any unencrypted S3 buckets or DynamoDB tables.
 
 **Implementation:**
-- `lambda_security_monitor.tf` - Scheduled Lambda (every 24 hours)
-- Scans all S3 buckets and DynamoDB tables
-- Publishes to SNS if unencrypted resources detected
+- `lambda_security_monitor.tf` - Lambda function that scans all resources
+- `cloudwatch.tf` - EventBridge rule triggers the Lambda every 24 hours
+- `lambda_security_monitor/index.py` - Python code that checks encryption status
+- `sns.tf` - SNS topic receives alerts when unencrypted resources are found
+
+**Scan Logic:**
+- Calls `s3:GetBucketEncryption` for all buckets
+- Calls `dynamodb:DescribeTable` and checks `SSEDescription` field
+- Publishes detailed SNS message with list of non-compliant resources
+
+**Verification:** Create an unencrypted bucket and manually invoke the monitor Lambda.
 
 ### 7. Error Handling
 
-**Requirement:** Graceful handling of failures and DynamoDB write errors.
+**Requirement:** Implement graceful error handling for DynamoDB write failures and other issues.
 
-**Implementation:**
-- Step Functions retry logic (3 attempts, exponential backoff)
-- Catch blocks route errors to SNS notifications
-- Lambda functions have try-catch with detailed logging
+**Implementation in `step_functions.tf`:**
+```json
+"Retry": [
+  {
+    "ErrorEquals": ["States.ALL"],
+    "IntervalSeconds": 2,
+    "MaxAttempts": 3,
+    "BackoffRate": 2.0
+  }
+],
+"Catch": [
+  {
+    "ErrorEquals": ["States.ALL"],
+    "ResultPath": "$.error",
+    "Next": "NotifyFailure"
+  }
+]
+```
+
+**Implementation in Lambda functions:**
+- All functions wrapped in try-except blocks
+- Validation errors return structured error responses
+- Errors logged to CloudWatch with full context
+- SNS notification sent on unrecoverable failures
+
+**Verification:** Trigger an error by providing invalid input and verify retry behavior in Step Functions console.
 
 ### 8. Logging
 
-**Requirement:** Capture event details and Step Function execution status.
+**Requirement:** Comprehensive logging to capture event details and Step Functions execution status.
 
 **Implementation:**
-- All Lambdas log to CloudWatch
-- Step Functions logging enabled at ALL level
-- Structured logging with event details
+- `cloudwatch.tf` - Log groups created for all Lambda functions with 7-day retention
+- `step_functions.tf` - State machine logging enabled at `ALL` level, logging to CloudWatch
+- All Lambda functions use structured logging with JSON format
+- Logs include: request IDs, input parameters, execution duration, error details
+
+**Log Contents:**
+- S3 event details (bucket name, object key, timestamp)
+- Validation results and any security violations detected
+- DynamoDB write operations and response metadata
+- Step Functions state transitions and decision outcomes
+
+**Verification:** Run `aws logs tail /aws/lambda/<function-name> --follow` during testing.
 
 ### 9. Unit Testing
 
-**Requirement:** Unit tests to ensure quality and reliability.
+**Requirement:** Include unit tests to ensure code quality and reliability.
 
 **Implementation:**
-- `tests/` directory with comprehensive test suite
-- 16 unit tests covering all Lambda functions
-- Tests for validation, error handling, and success paths
-- >85% code coverage
+- `tests/test_lambda_trigger.py` - 6 unit tests for trigger Lambda
+- `tests/test_lambda_writer.py` - 6 unit tests for writer Lambda
+- `tests/test_security_monitor.py` - 4 unit tests for security monitor
+- Total: 16 comprehensive unit tests covering success and failure paths
+
+**Test Coverage:**
+- Input validation (path traversal, null bytes, length limits)
+- Successful execution paths
+- Error handling and exception scenarios
+- Mock AWS SDK calls using `moto` library
+- Code coverage exceeds 85% across all functions
+
+**Verification:** Run `python -m pytest tests/ -v --cov` to execute tests and generate coverage report.
+
+---
 
 ## Cleanup
 
-When you're done testing, clean up all resources:
+When you're finished testing, remove all resources to avoid unnecessary costs (in real AWS) or free up local resources (in LocalStack):
+
+### Complete Cleanup
 
 ```bash
-# Destroy all Terraform-managed resources
-terraform destroy
+# Destroy all Terraform-managed infrastructure
+terraform destroy -auto-approve
 
-# Stop and remove LocalStack
+# Stop LocalStack container
 docker-compose down
 
-# Remove volumes (optional - clears all LocalStack data)
+# Remove all LocalStack volumes and data (optional)
 docker-compose down -v
+
+# Remove generated Lambda zip files (optional)
+rm -f lambda_trigger.zip lambda_writer.zip lambda_security_monitor.zip
 ```
+
+### Partial Cleanup (Keep Infrastructure, Remove Data)
+
+```bash
+# Delete all objects in the S3 bucket
+aws --endpoint-url $ENDPOINT_URL s3 rm \
+  s3://$(terraform output -raw s3_bucket_name) \
+  --recursive
+
+# Clear all items from DynamoDB table
+aws --endpoint-url $ENDPOINT_URL dynamodb scan \
+  --table-name $(terraform output -raw dynamodb_table_name) \
+  --query "Items[*].[Filename.S, UploadTimestamp.S]" \
+  --output text | while read filename timestamp; do
+    aws --endpoint-url $ENDPOINT_URL dynamodb delete-item \
+      --table-name $(terraform output -raw dynamodb_table_name) \
+      --key "{\"Filename\":{\"S\":\"$filename\"},\"UploadTimestamp\":{\"S\":\"$timestamp\"}}"
+  done
+```
+
+### Verify Cleanup
+
+```bash
+# Check that no resources remain
+terraform show
+
+# Verify LocalStack is stopped
+docker-compose ps
+
+# Verify no volumes remain
+docker volume ls | grep localstack
+```
+
+---
 
 ## Additional Resources
 
-- [AWS Step Functions Documentation](https://docs.aws.amazon.com/step-functions/)
-- [Terraform AWS Provider](https://registry.terraform.io/providers/hashicorp/aws/latest/docs)
-- [LocalStack Documentation](https://docs.localstack.cloud/)
+### AWS Documentation
+- [AWS Step Functions Developer Guide](https://docs.aws.amazon.com/step-functions/)
 - [AWS Lambda Best Practices](https://docs.aws.amazon.com/lambda/latest/dg/best-practices.html)
+- [Amazon S3 Security Best Practices](https://docs.aws.amazon.com/AmazonS3/latest/userguide/security-best-practices.html)
+- [AWS KMS Developer Guide](https://docs.aws.amazon.com/kms/latest/developerguide/)
+- [DynamoDB Encryption at Rest](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/EncryptionAtRest.html)
 
+### Terraform Documentation
+- [Terraform AWS Provider](https://registry.terraform.io/providers/hashicorp/aws/latest/docs)
+- [AWS S3 Bucket Resource](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket)
+- [AWS Lambda Function Resource](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/lambda_function)
+- [AWS Step Functions State Machine](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sfn_state_machine)
+
+### LocalStack Documentation
+- [LocalStack Documentation](https://docs.localstack.cloud/)
+- [LocalStack AWS Service Coverage](https://docs.localstack.cloud/references/coverage/)
+- [LocalStack Configuration](https://docs.localstack.cloud/references/configuration/)
+
+### Security Best Practices
+- [OWASP Top 10](https://owasp.org/www-project-top-ten/)
+- [AWS Well-Architected Framework - Security Pillar](https://docs.aws.amazon.com/wellarchitected/latest/security-pillar/welcome.html)
+- [CIS AWS Foundations Benchmark](https://www.cisecurity.org/benchmark/amazon_web_services)
+
+---
