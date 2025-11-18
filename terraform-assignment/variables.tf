@@ -33,7 +33,7 @@ variable "dynamodb_table_name" {
 variable "security_alert_email" {
   description = "Email address for security alerts. Must be a real email you can access."
   type        = string
-  default     = "adedotun.aws@gmail.com"
+  default     = "alerts@test.com"
 }
 
 locals {
